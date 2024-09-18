@@ -17,7 +17,6 @@ use colored::*;
 
 #[tokio::main]
 async fn main() {
-    // Analyse des arguments de ligne de commande
     let matches = App::new("CloudFade")
         .version("1.0")
         .author("boring")
@@ -250,8 +249,7 @@ fn parse_ip_range(ip_range: &str) -> Result<Vec<String>, String> {
         return Err("The starting IP address is greater than the ending IP address.".to_string());
     }
 
-    // Limiter le nombre maximum d'adresses IP générées pour éviter une surcharge
-    let max_ips = 1_000_000; // Ajustez ce nombre selon vos besoins
+    let max_ips = 1_000_000;
     let total_ips = end - start + 1;
 
     if total_ips > max_ips {
