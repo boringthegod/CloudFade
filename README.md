@@ -8,7 +8,7 @@ Unmask real IP address of a domain hidden behind Cloudflare by IPs bruteforcing.
 Unmask real IP address of a domain hidden behind Cloudflare by IPs bruteforcing
 
 USAGE:
-    cloud_fade [FLAGS] [OPTIONS] <domain> <ipfile>
+    cloud_fade [FLAGS] [OPTIONS] --domain <domain> --ipfile <ipfile> --targetsfile <TARGETS_FILE>
 
 FLAGS:
         --aggressive    More intensive checks
@@ -16,19 +16,20 @@ FLAGS:
     -V, --version       Prints version information
 
 OPTIONS:
-        --iprange <IP_RANGE>      Specifies a range of IP addresses (for example, 51.15.0.0-51.15.10.255)
-        --threads <NUMBER>        Set the maximum number of concurrent threads
-        --timeout <SECONDS>       Waiting time for each request in seconds [default: 5]
-        --useragents <UA_FILE>    File containing the list of user agents
-
-ARGS:
-    <domain>    Domain to unmask
-    <ipfile>    File containing list of IP addresses
+    -d, --domain <domain>               Domain to unmask
+    -i, --ipfile <ipfile>               File containing list of IP addresses
+        --iprange <IP_RANGE>            Specifies a range of IP addresses (for example, 51.15.0.0-51.15.10.255)
+        --output <OUTPUT_FILE>          File to write the results
+    -t, --targetsfile <TARGETS_FILE>    File containing list of domains
+        --threads <NUMBER>              Set the maximum number of concurrent threads
+        --timeout <SECONDS>             Waiting time for each request in seconds [default: 5]
+        --useragents <UA_FILE>          File containing the list of user agents
 
 Examples:
-  ./cloud_fade predictasearch.com ipsfile.txt
-  ./cloud_fade predictasearch.com --iprange 167.99.32.0-167.99.32.255
-  ./cloud_fade predictasearch.com --iprange 167.99.32.0-167.99.32.255 --threads 10 --timeout 8 --useragents useragents.txt --aggressive
+  ./cloud_fade --domain predictasearch.com --ipfile ipsfile.txt
+  ./cloud_fade --targetsfile targets.txt --ipfile ipsfile.txt
+  ./cloud_fade --domain predictasearch.com --iprange 167.99.32.0-167.99.32.255
+  ./cloud_fade --domain predictasearch.com --iprange 167.99.32.0-167.99.32.255 --threads 10 --timeout 8 --useragents useragents.txt --aggressive
 ```
 
 ## prerequisites
