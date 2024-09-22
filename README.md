@@ -2,6 +2,8 @@
 
 Unmask real IP address of a domain hidden behind Cloudflare by IPs bruteforcing.
 
+*You can limit the range of IPs to be tested by first using [censhess](https://github.com/boringthegod/censhess)*
+
 ## usage
 
 ```
