@@ -1,6 +1,6 @@
 [package]
 name = "cloud_fade"
-version = "0.1.2"
+version = "0.1.3"
 authors = ["boring <boringthegod@tutanota.com>"]
 edition = "2021"
 description = "Unmask real IP address of a domain hidden behind Cloudflare by IPs bruteforcing"

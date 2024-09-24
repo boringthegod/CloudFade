@@ -37,7 +37,7 @@ Examples:
 ## prerequisites
 
 - [Rust](https://www.rust-lang.org/tools/install)
-
+- whois
 ## installation
 
 ```

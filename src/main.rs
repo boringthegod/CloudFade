@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::net::{Ipv4Addr, SocketAddr};
+use std::process::Command;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,7 +22,7 @@ use scraper::{Html, Selector};
 #[tokio::main]
 async fn main() {
     let matches = App::new("CloudFade")
-        .version("1.2")
+        .version("1.3")
         .author("boring")
         .about("Unmask real IP address of a domain hidden behind Cloudflare by IPs bruteforcing")
         .arg(
@@ -144,7 +145,27 @@ async fn main() {
         return;
     }
 
-    let total_tasks = domains.len() * ips.len();
+    let filtered_ips = filter_cloudflare_ips(ips).await;
+    if filtered_ips.is_empty() {
+        eprintln!("No non-Cloudflare IP addresses to process.");
+        return;
+    }
+
+    let mut valid_domains = Vec::new();
+    for domain in &domains {
+        if is_domain_valid(domain, timeout_duration).await {
+            valid_domains.push(domain.clone());
+        } else {
+            eprintln!("Ignoring domain {} due to unresponsiveness or invalid status code", domain);
+        }
+    }
+
+    if valid_domains.is_empty() {
+        eprintln!("No valid domains to process.");
+        return;
+    }
+
+    let total_tasks = valid_domains.len() * filtered_ips.len();
 
     let pb = ProgressBar::new(total_tasks as u64);
     pb.set_style(
@@ -164,10 +185,9 @@ async fn main() {
         vec!["Mozilla/5.0 (compatible; CloudFade/1.0; +https://example.com)".to_string()]
     };
 
-    // Extraction des motifs uniques pour chaque domaine
     let mut target_patterns = HashMap::new();
 
-    for domain in &domains {
+    for domain in &valid_domains {
         let target_pattern = match get_target_pattern(domain, timeout_duration).await {
             Some(pattern) => pattern,
             None => {
@@ -188,14 +208,13 @@ async fn main() {
 
     let tasks_list: Vec<(String, String)> = target_patterns
         .keys()
-        .flat_map(|domain| ips.iter().map(move |ip| (domain.clone(), ip.clone())))
+        .flat_map(|domain| filtered_ips.iter().map(move |ip| (domain.clone(), ip.clone())))
         .collect();
 
     let semaphore = Arc::new(Semaphore::new(max_threads));
 
     let mut tasks = FuturesUnordered::new();
 
-    // Préparation du fichier de sortie
     let output_file = matches.value_of("output");
     let output_mutex = if let Some(output_path) = output_file {
         Some(Arc::new(tokio::sync::Mutex::new(
@@ -214,7 +233,6 @@ async fn main() {
         let semaphore = semaphore.clone();
         let pb = pb.clone();
 
-        // Récupérer le motif cible pour ce domaine
         let target_pattern = target_patterns.get(&domain).unwrap().clone();
 
         let permit = semaphore.clone().acquire_owned().await.unwrap();
@@ -307,6 +325,30 @@ async fn test_ip(
     None
 }
 
+async fn is_domain_valid(domain: &str, timeout_duration: Duration) -> bool {
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
+
+    let url = format!("http://{}/", domain);
+    let request = client.get(&url);
+
+    let response = timeout(timeout_duration, request.send()).await;
+    if let Ok(Ok(resp)) = response {
+        let status = resp.status();
+        if status == 200 {
+            true
+        } else {
+            eprintln!("Domain {} returned status code {}", domain, status);
+            false
+        }
+    } else {
+        eprintln!("Domain {} is unresponsive", domain);
+        false
+    }
+}
+
 async fn get_target_pattern(domain: &str, timeout_duration: Duration) -> Option<String> {
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
@@ -318,11 +360,17 @@ async fn get_target_pattern(domain: &str, timeout_duration: Duration) -> Option<
 
     let response = timeout(timeout_duration, request.send()).await;
     if let Ok(Ok(resp)) = response {
+        if resp.status() != 200 {
+            eprintln!("Domain {} returned status code {}", domain, resp.status());
+            return None;
+        }
         if let Ok(text) = resp.text().await {
             if let Some(title) = extract_title(&text) {
                 return Some(title);
             }
         }
+    } else {
+        eprintln!("Domain {} is unresponsive", domain);
     }
     None
 }
@@ -381,4 +429,59 @@ fn parse_ip_range(ip_range: &str) -> Result<Vec<String>, String> {
         .collect();
 
     Ok(ips)
+}
+
+async fn filter_cloudflare_ips(ips: Vec<String>) -> Vec<String> {
+    let semaphore = Arc::new(Semaphore::new(50));
+    let mut tasks = FuturesUnordered::new();
+    let asn_to_filter = "AS13335";
+
+    for ip in ips {
+        let ip = ip.clone();
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        tasks.push(tokio::spawn(async move {
+            let result = is_cloudflare_ip(&ip, asn_to_filter).await;
+            drop(permit);
+            if !result {
+                Some(ip)
+            } else {
+                None
+            }
+        }));
+    }
+
+    let mut filtered_ips = Vec::new();
+    while let Some(result) = tasks.next().await {
+        if let Ok(Some(ip)) = result {
+            filtered_ips.push(ip);
+        }
+    }
+
+    filtered_ips
+}
+
+async fn is_cloudflare_ip(ip: &str, asn_to_filter: &str) -> bool {
+    let output = Command::new("whois")
+        .arg(ip)
+        .output();
+
+    match output {
+        Ok(output) => {
+            if output.status.success() {
+                let data = String::from_utf8_lossy(&output.stdout).to_lowercase();
+                if data.contains(&asn_to_filter.to_lowercase()) {
+                    true
+                } else {
+                    false
+                }
+            } else {
+                eprintln!("WHOIS command failed for IP {}: {}", ip, String::from_utf8_lossy(&output.stderr));
+                false
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to execute WHOIS command for IP {}: {}", ip, e);
+            false
+        }
+    }
 }
