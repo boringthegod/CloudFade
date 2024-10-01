@@ -22,7 +22,7 @@ use scraper::{Html, Selector};
 #[tokio::main]
 async fn main() {
     let matches = App::new("CloudFade")
-        .version("1.3")
+        .version("1.4")
         .author("boring")
         .about("Unmask real IP address of a domain hidden behind Cloudflare by IPs bruteforcing")
         .arg(
@@ -57,7 +57,7 @@ async fn main() {
             Arg::with_name("iprange")
                 .long("iprange")
                 .value_name("IP_RANGE")
-                .help("Specifies a range of IP addresses (for example, 51.15.0.0-51.15.10.255)")
+                .help("Specifies a single IP address or a range of IP addresses (e.g., 51.15.0.0-51.15.10.255)")
                 .conflicts_with("ipfile")
                 .takes_value(true),
         )
@@ -398,37 +398,43 @@ fn read_lines(filename: &str) -> Vec<String> {
 
 fn parse_ip_range(ip_range: &str) -> Result<Vec<String>, String> {
     let parts: Vec<&str> = ip_range.split('-').collect();
-    if parts.len() != 2 {
-        return Err("IP range format is invalid. Use 'start-end' format.".to_string());
+    if parts.len() == 1 {
+        // Traiter comme une seule adresse IP
+        let ip = parts[0];
+        let ip_addr = Ipv4Addr::from_str(ip).map_err(|_| "Adresse IP invalide.".to_string())?;
+        Ok(vec![ip_addr.to_string()])
+    } else if parts.len() == 2 {
+        // Traiter comme une plage d'adresses IP
+        let start_ip =
+            Ipv4Addr::from_str(parts[0]).map_err(|_| "Adresse IP de début invalide.".to_string())?;
+        let end_ip =
+            Ipv4Addr::from_str(parts[1]).map_err(|_| "Adresse IP de fin invalide.".to_string())?;
+
+        let start: u32 = start_ip.into();
+        let end: u32 = end_ip.into();
+
+        if start > end {
+            return Err("L'adresse IP de début est supérieure à l'adresse IP de fin.".to_string());
+        }
+
+        let max_ips = 1_000_000;
+        let total_ips = end - start + 1;
+
+        if total_ips > max_ips {
+            return Err(format!(
+                "La plage d'adresses IP est trop grande ({} adresses). Veuillez spécifier une plage plus petite.",
+                total_ips
+            ));
+        }
+
+        let ips: Vec<String> = (start..=end)
+            .map(|ip_num| Ipv4Addr::from(ip_num).to_string())
+            .collect();
+
+        Ok(ips)
+    } else {
+        Err("Format de plage IP invalide. Utilisez le format 'début-fin' ou spécifiez une seule adresse IP.".to_string())
     }
-
-    let start_ip =
-        Ipv4Addr::from_str(parts[0]).map_err(|_| "Start IP address invalid.".to_string())?;
-    let end_ip =
-        Ipv4Addr::from_str(parts[1]).map_err(|_| "End IP address invalid.".to_string())?;
-
-    let start: u32 = start_ip.into();
-    let end: u32 = end_ip.into();
-
-    if start > end {
-        return Err("The starting IP address is greater than the ending IP address.".to_string());
-    }
-
-    let max_ips = 1_000_000;
-    let total_ips = end - start + 1;
-
-    if total_ips > max_ips {
-        return Err(format!(
-            "IP range is too large ({} addresses). Please specify a smaller range.",
-            total_ips
-        ));
-    }
-
-    let ips: Vec<String> = (start..=end)
-        .map(|ip_num| Ipv4Addr::from(ip_num).to_string())
-        .collect();
-
-    Ok(ips)
 }
 
 async fn filter_cloudflare_ips(ips: Vec<String>) -> Vec<String> {

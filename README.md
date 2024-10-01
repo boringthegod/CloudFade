@@ -20,7 +20,7 @@ FLAGS:
 OPTIONS:
     -d, --domain <domain>               Domain to unmask
     -i, --ipfile <ipfile>               File containing list of IP addresses
-        --iprange <IP_RANGE>            Specifies a range of IP addresses (for example, 51.15.0.0-51.15.10.255)
+        --iprange <IP_RANGE>            Specifies a range of IP addresses (for example, 51.15.0.0-51.15.10.255) or just one IP
         --output <OUTPUT_FILE>          File to write the results
     -t, --targetsfile <TARGETS_FILE>    File containing list of domains
         --threads <NUMBER>              Set the maximum number of concurrent threads
@@ -38,6 +38,7 @@ Examples:
 
 - [Rust](https://www.rust-lang.org/tools/install)
 - whois
+
 ## installation
 
 ```
