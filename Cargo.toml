@@ -1,6 +1,6 @@
 [package]
 name = "cloud_fade"
-version = "0.1.4"
+version = "0.1.5"
 authors = ["boring <boringthegod@tutanota.com>"]
 edition = "2021"
 description = "Unmask real IP address of a domain hidden behind Cloudflare by IPs bruteforcing"
@@ -18,7 +18,9 @@ futures = "0.3"
 indicatif = "0.16"
 num_cpus = "1.13"
 rand = "0.8"
-reqwest = { version = "0.11", features = ["json", "gzip", "brotli", "deflate", "stream", "native-tls", "rustls-tls"] }
+reqwest = { version = "0.11", default-features = false, features = ["json", "gzip", "brotli", "deflate", "stream", "rustls-tls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 colored = "2.0"
 scraper = "0.14"
+rquest = "0.25"
+flate2 = "1.0"

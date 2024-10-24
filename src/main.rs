@@ -8,6 +8,7 @@ use reqwest::header::HeaderMap;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::process::Command;
 use std::str::FromStr;
@@ -18,6 +19,8 @@ use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use colored::*;
 use scraper::{Html, Selector};
+use rquest::tls::Impersonate;
+use flate2::read::GzDecoder;
 
 #[tokio::main]
 async fn main() {
@@ -325,6 +328,7 @@ async fn test_ip(
     None
 }
 
+
 async fn is_domain_valid(domain: &str, timeout_duration: Duration) -> bool {
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
@@ -338,16 +342,57 @@ async fn is_domain_valid(domain: &str, timeout_duration: Duration) -> bool {
     if let Ok(Ok(resp)) = response {
         let status = resp.status();
         if status == 200 {
-            true
+            return true;
+        } else if status == 403 {
+            return retry_with_rquest(domain).await;
         } else {
             eprintln!("Domain {} returned status code {}", domain, status);
-            false
+            return false;
         }
     } else {
         eprintln!("Domain {} is unresponsive", domain);
-        false
+        return false;
     }
 }
+
+
+async fn retry_with_rquest(domain: &str) -> bool {
+    let client2 = match rquest::Client::builder()
+        .impersonate(Impersonate::Chrome129)
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => {
+            eprintln!("Erreur lors de la création du client: {}", e);
+            return false;
+        }
+    };
+
+    let url = format!("https://{}", domain);
+
+    let request_builder = client2.get(&url);
+    let request = match request_builder.build() {
+        Ok(req) => req,
+        Err(e) => {
+            eprintln!("Erreur lors de la construction de la requête: {}", e);
+            return false;
+        }
+    };
+
+    let resp = match client2.execute(request).await {
+        Ok(response) => response,
+        Err(e) => {
+            eprintln!("Erreur lors de l'exécution de la requête: {}", e);
+            return false;
+        }
+    };
+
+    let status = resp.status();
+
+    status.is_success()
+}
+
+
 
 async fn get_target_pattern(domain: &str, timeout_duration: Duration) -> Option<String> {
     let client = reqwest::Client::builder()
@@ -359,21 +404,67 @@ async fn get_target_pattern(domain: &str, timeout_duration: Duration) -> Option<
     let request = client.get(&url);
 
     let response = timeout(timeout_duration, request.send()).await;
+
     if let Ok(Ok(resp)) = response {
-        if resp.status() != 200 {
-            eprintln!("Domain {} returned status code {}", domain, resp.status());
-            return None;
-        }
-        if let Ok(text) = resp.text().await {
-            if let Some(title) = extract_title(&text) {
-                return Some(title);
+        if resp.status() == 200 {
+            if let Ok(text) = resp.text().await {
+                if let Some(title) = extract_title(&text) {
+                    return Some(title);
+                }
             }
+        } else if resp.status() == 403 {
+            return match fetch_title_with_rquest(domain).await {
+                Ok(title) => Some(title),
+                Err(e) => {
+                    eprintln!("Failed to fetch title via rquest: {}", e);
+                    None
+                }
+            };
         }
-    } else {
-        eprintln!("Domain {} is unresponsive", domain);
     }
+
+    eprintln!("Domain {} is unresponsive or returned an error.", domain);
     None
 }
+
+async fn fetch_title_with_rquest(domain: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let client = rquest::Client::builder()
+        .impersonate(Impersonate::Chrome129)
+        .build()?;
+
+    let url = format!("https://{}/", domain);
+    let resp = client.get(&url).send().await?;
+
+    let status = resp.status();
+    if status == 200 {
+        let body = if let Some(encoding) = resp.headers().get("Content-Encoding") {
+            if encoding == "gzip" {
+                let body = resp.bytes().await?;
+                let mut decoder = GzDecoder::new(&body[..]);
+                let mut decompressed_body = String::new();
+                decoder.read_to_string(&mut decompressed_body)?;
+                decompressed_body
+            } else {
+                resp.text().await?
+            }
+        } else {
+            resp.text().await?
+        };
+
+        let document = Html::parse_document(&body);
+        let selector = Selector::parse("title").unwrap();
+
+        if let Some(title_element) = document.select(&selector).next() {
+            let title = title_element.inner_html();
+            return Ok(title);
+        } else {
+            return Err("No <title> found.".into());
+        }
+    } else {
+        return Err(format!("Request failed with status: {}", status).into());
+    }
+}
+
 
 fn extract_title(html: &str) -> Option<String> {
     let document = Html::parse_document(html);
@@ -399,12 +490,10 @@ fn read_lines(filename: &str) -> Vec<String> {
 fn parse_ip_range(ip_range: &str) -> Result<Vec<String>, String> {
     let parts: Vec<&str> = ip_range.split('-').collect();
     if parts.len() == 1 {
-        // Traiter comme une seule adresse IP
         let ip = parts[0];
         let ip_addr = Ipv4Addr::from_str(ip).map_err(|_| "Adresse IP invalide.".to_string())?;
         Ok(vec![ip_addr.to_string()])
     } else if parts.len() == 2 {
-        // Traiter comme une plage d'adresses IP
         let start_ip =
             Ipv4Addr::from_str(parts[0]).map_err(|_| "Adresse IP de début invalide.".to_string())?;
         let end_ip =
