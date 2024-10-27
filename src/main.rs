@@ -1,4 +1,4 @@
-use clap::{App, Arg};
+use clap::{App, Arg, ArgGroup};
 use futures::stream::FuturesUnordered;
 use futures::stream::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -21,6 +21,9 @@ use colored::*;
 use scraper::{Html, Selector};
 use rquest::tls::Impersonate;
 use flate2::read::GzDecoder;
+use regex::Regex;
+use tokio::process::Command as TokioCommand;
+use ipnet::Ipv4Net;
 
 #[tokio::main]
 async fn main() {
@@ -52,17 +55,26 @@ async fn main() {
                 .long("ipfile")
                 .short("i")
                 .help("File containing list of IP addresses")
-                .conflicts_with("iprange")
-                .required_unless("iprange")
                 .takes_value(true),
         )
         .arg(
             Arg::with_name("iprange")
                 .long("iprange")
                 .value_name("IP_RANGE")
-                .help("Specifies a single IP address or a range of IP addresses (e.g., 51.15.0.0-51.15.10.255)")
-                .conflicts_with("ipfile")
+                .help("Specifies a single IP address, a range of IP addresses (e.g., 51.15.0.0-51.15.10.255), or a CIDR notation (e.g., 51.15.0.0/16)")
                 .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("asn")
+                .long("asn")
+                .value_name("ASN_CODE")
+                .help("Specify an ASN code (e.g., AS714) to scan all ranges associated with it")
+                .takes_value(true),
+        )
+        .group(ArgGroup::with_name("ip_input")
+            .args(&["ipfile", "iprange", "asn"])
+            .required(true)
+            .multiple(false)
         )
         .arg(
             Arg::with_name("useragents")
@@ -110,6 +122,7 @@ async fn main() {
 
     let ip_file = matches.value_of("ipfile");
     let ip_range = matches.value_of("iprange");
+    let asn_code = matches.value_of("asn");
     let ua_file = matches.value_of("useragents");
     let timeout_secs: u64 = matches.value_of("timeout").unwrap().parse().unwrap();
     let timeout_duration = Duration::from_secs(timeout_secs);
@@ -138,8 +151,27 @@ async fn main() {
                 return;
             }
         }
+    } else if let Some(asn_code) = asn_code {
+        let ranges = fetch_ranges_for_asn(asn_code).await;
+        if ranges.is_empty() {
+            eprintln!("No IP ranges found for ASN code {}", asn_code);
+            return;
+        } else {
+            println!("Found the following ranges for ASN {}:", asn_code);
+            for range in &ranges {
+                println!("{}", range);
+            }
+            let mut ips = Vec::new();
+            for range in ranges {
+                match parse_ip_range(&range) {
+                    Ok(mut range_ips) => ips.append(&mut range_ips),
+                    Err(e) => eprintln!("Error parsing range {}: {}", range, e),
+                }
+            }
+            ips
+        }
     } else {
-        eprintln!("You must specify either an IP address file with --ipfile, or an IP address range with --iprange.");
+        eprintln!("You must specify either an IP address file with --ipfile, an IP address range with --iprange, or an ASN code with --asn.");
         return;
     };
 
@@ -488,41 +520,78 @@ fn read_lines(filename: &str) -> Vec<String> {
 }
 
 fn parse_ip_range(ip_range: &str) -> Result<Vec<String>, String> {
-    let parts: Vec<&str> = ip_range.split('-').collect();
-    if parts.len() == 1 {
-        let ip = parts[0];
-        let ip_addr = Ipv4Addr::from_str(ip).map_err(|_| "Adresse IP invalide.".to_string())?;
-        Ok(vec![ip_addr.to_string()])
-    } else if parts.len() == 2 {
-        let start_ip =
-            Ipv4Addr::from_str(parts[0]).map_err(|_| "Adresse IP de début invalide.".to_string())?;
-        let end_ip =
-            Ipv4Addr::from_str(parts[1]).map_err(|_| "Adresse IP de fin invalide.".to_string())?;
-
-        let start: u32 = start_ip.into();
-        let end: u32 = end_ip.into();
-
-        if start > end {
-            return Err("L'adresse IP de début est supérieure à l'adresse IP de fin.".to_string());
-        }
-
-        let max_ips = 1_000_000;
-        let total_ips = end - start + 1;
-
-        if total_ips > max_ips {
-            return Err(format!(
-                "La plage d'adresses IP est trop grande ({} adresses). Veuillez spécifier une plage plus petite.",
-                total_ips
-            ));
-        }
-
-        let ips: Vec<String> = (start..=end)
-            .map(|ip_num| Ipv4Addr::from(ip_num).to_string())
-            .collect();
-
+    if ip_range.contains('/') {
+        // Handle CIDR notation
+        let cidr = ip_range;
+        let ipnet: Ipv4Net = match cidr.parse() {
+            Ok(net) => net,
+            Err(_) => return Err("Invalid CIDR notation.".to_string()),
+        };
+        let ips: Vec<String> = ipnet.hosts().map(|ip| ip.to_string()).collect();
         Ok(ips)
+    } else if ip_range.contains('-') {
+        // Handle start-end format
+        let parts: Vec<&str> = ip_range.split('-').collect();
+        if parts.len() == 2 {
+            let start_ip =
+                Ipv4Addr::from_str(parts[0]).map_err(|_| "Invalid start IP address.".to_string())?;
+            let end_ip =
+                Ipv4Addr::from_str(parts[1]).map_err(|_| "Invalid end IP address.".to_string())?;
+
+            let start: u32 = start_ip.into();
+            let end: u32 = end_ip.into();
+
+            if start > end {
+                return Err("Start IP address is greater than end IP address.".to_string());
+            }
+
+            let ips: Vec<String> = (start..=end)
+                .map(|ip_num| Ipv4Addr::from(ip_num).to_string())
+                .collect();
+
+            Ok(ips)
+        } else {
+            Err("Invalid IP range format. Use 'start-end' format, CIDR notation, or specify a single IP address.".to_string())
+        }
     } else {
-        Err("Format de plage IP invalide. Utilisez le format 'début-fin' ou spécifiez une seule adresse IP.".to_string())
+        // Handle single IP address
+        let ip = ip_range;
+        let ip_addr = Ipv4Addr::from_str(ip).map_err(|_| "Invalid IP address.".to_string())?;
+        Ok(vec![ip_addr.to_string()])
+    }
+}
+
+async fn fetch_ranges_for_asn(asn_code: &str) -> Vec<String> {
+    let whois_arg = format!("-i origin {}", asn_code);
+
+    let output = TokioCommand::new("whois")
+        .arg("-h")
+        .arg("whois.radb.net")
+        .arg("--")
+        .arg(&whois_arg)
+        .output()
+        .await;
+
+    match output {
+        Ok(output) => {
+            if output.status.success() {
+                let data = String::from_utf8_lossy(&output.stdout);
+                let re = Regex::new(r"(\d{1,3}\.){3}\d{1,3}/\d+").unwrap();
+                let mut ranges = Vec::new();
+                for cap in re.captures_iter(&data) {
+                    let range = cap.get(0).unwrap().as_str().to_string();
+                    ranges.push(range);
+                }
+                ranges
+            } else {
+                eprintln!("WHOIS command failed for ASN {}: {}", asn_code, String::from_utf8_lossy(&output.stderr));
+                Vec::new()
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to execute WHOIS command for ASN {}: {}", asn_code, e);
+            Vec::new()
+        }
     }
 }
 
