@@ -42,6 +42,7 @@ Examples:
 
 - [Rust](https://www.rust-lang.org/tools/install)
 - whois
+- cmake for linux users : `sudo apt install cmake`
 
 ## installation
 
