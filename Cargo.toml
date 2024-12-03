@@ -22,7 +22,7 @@ reqwest = { version = "0.11", default-features = false, features = ["json", "gzi
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "process"] }
 colored = "2.0"
 scraper = "0.14"
-rquest = "0.25"
+rquest = "0.27.7"
 flate2 = "1.0"
 regex = "1.5"
 ipnet = "2.3"
